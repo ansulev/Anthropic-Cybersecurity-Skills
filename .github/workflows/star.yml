@@ -1,4 +1,4 @@
-# .github/workflows/star-milestones.yml
+
 name: Star Milestone Tracker
 
 on:
@@ -19,21 +19,34 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
           REPO: mukul975/Anthropic-Cybersecurity-Skills
         run: |
+          # Get current star count
           STARS=$(curl -s -H "Authorization: token $GH_TOKEN" \
             https://api.github.com/repos/$REPO | jq .stargazers_count)
           echo "Current stars: $STARS"
 
-          LAST=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$REPO/actions/variables/LAST_STAR_MILESTONE" \
-            | jq -r '.value // "0"')
+          # Get last notified milestone
+          LAST_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO/actions/variables/LAST_STAR_MILESTONE")
+          HTTP_STATUS=$(echo "$LAST_RESPONSE" | tail -n1)
+          LAST=$(echo "$LAST_RESPONSE" | head -n1 | jq -r '.value // "0"')
+
+          # If variable doesn't exist yet, treat as 0
+          if [ "$HTTP_STATUS" = "404" ]; then
+            LAST="0"
+          fi
           echo "Last notified milestone: $LAST"
 
-          # Highest multiple of 500 crossed but not yet notified
+          # Calculate highest multiple of 500 crossed
           NOTIFY_MILESTONE=$(( (STARS / 500) * 500 ))
+          NEXT=$(( (STARS / 500 + 1) * 500 ))
+
+          echo "Current milestone: $NOTIFY_MILESTONE | Next: $NEXT ($(( NEXT - STARS )) stars to go)"
 
           if [ "$NOTIFY_MILESTONE" -gt "$LAST" ] && [ "$NOTIFY_MILESTONE" -gt 0 ]; then
-            echo "🎉 New milestone: $NOTIFY_MILESTONE"
+            echo "🎉 New milestone hit: $NOTIFY_MILESTONE"
 
+            # Send Slack notification
             curl -X POST "$SLACK_WEBHOOK" \
               -H 'Content-type: application/json' \
               -d "{
@@ -43,17 +56,31 @@ jobs:
                   \"fields\": [
                     {\"title\": \"Milestone\", \"value\": \"$NOTIFY_MILESTONE stars 🎯\", \"short\": true},
                     {\"title\": \"Current Stars\", \"value\": \"$STARS ⭐\", \"short\": true},
-                    {\"title\": \"Repo\", \"value\": \"$REPO\", \"short\": false}
+                    {\"title\": \"Repo\", \"value\": \"$REPO\", \"short\": false},
+                    {\"title\": \"Link\", \"value\": \"https://github.com/$REPO\", \"short\": false}
                   ]
                 }]
               }"
 
-            curl -s -X PATCH \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Content-type: application/json" \
-              "https://api.github.com/repos/$REPO/actions/variables/LAST_STAR_MILESTONE" \
-              -d "{\"name\":\"LAST_STAR_MILESTONE\",\"value\":\"$NOTIFY_MILESTONE\"}"
+            # Update or create the variable
+            if [ "$HTTP_STATUS" = "404" ]; then
+              # Create variable
+              curl -s -X POST \
+                -H "Authorization: token $GH_TOKEN" \
+                -H "Content-type: application/json" \
+                "https://api.github.com/repos/$REPO/actions/variables" \
+                -d "{\"name\":\"LAST_STAR_MILESTONE\",\"value\":\"$NOTIFY_MILESTONE\"}"
+              echo "Created LAST_STAR_MILESTONE = $NOTIFY_MILESTONE"
+            else
+              # Update variable
+              curl -s -X PATCH \
+                -H "Authorization: token $GH_TOKEN" \
+                -H "Content-type: application/json" \
+                "https://api.github.com/repos/$REPO/actions/variables/LAST_STAR_MILESTONE" \
+                -d "{\"name\":\"LAST_STAR_MILESTONE\",\"value\":\"$NOTIFY_MILESTONE\"}"
+              echo "Updated LAST_STAR_MILESTONE = $NOTIFY_MILESTONE"
+            fi
+
           else
-            NEXT=$(( (STARS / 500 + 1) * 500 ))
             echo "No new milestone. Next at $NEXT stars ($(( NEXT - STARS )) to go)"
           fi
